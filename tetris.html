@@ -19,11 +19,15 @@
     box-sizing: border-box;
   }
 
+  html, body {
+    overscroll-behavior: contain;
+  }
+
   body {
     margin: 0;
     min-height: 100vh;
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     justify-content: center;
     background: var(--bg);
     font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif;
@@ -44,13 +48,23 @@
     border: 4px solid var(--grid-line);
     border-radius: 8px;
     box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+    max-width: 100%;
+    max-height: 62vh;
+    width: auto;
+    height: auto;
+    touch-action: none;
   }
 
   .side {
     width: 180px;
+    max-width: 100%;
     display: flex;
     flex-direction: column;
     gap: 16px;
+  }
+
+  .stats-row {
+    display: contents;
   }
 
   .panel {
@@ -106,6 +120,9 @@
     font-size: 14px;
     font-weight: 700;
     cursor: pointer;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
   }
 
   button:active {
@@ -127,8 +144,61 @@
   }
 
   @media (max-width: 640px) {
+    .layout {
+      gap: 12px;
+    }
+
+    #board {
+      max-height: 46vh;
+    }
+
+    .side {
+      width: 100%;
+      max-width: 340px;
+    }
+
+    .keys {
+      display: none;
+    }
+
+    /* モバイルでは「操作」を上、「情報」を下に並び替える */
+    .start-panel {
+      order: 1;
+      padding: 12px;
+    }
+
     .touch-controls {
+      order: 2;
       display: grid;
+    }
+
+    .stats-row {
+      order: 3;
+      display: flex;
+      gap: 8px;
+    }
+
+    .next-panel {
+      order: 4;
+    }
+
+    .stats-row .panel {
+      flex: 1;
+      padding: 10px 6px;
+      text-align: center;
+    }
+
+    .stats-row h2 {
+      font-size: 10px;
+      margin-bottom: 2px;
+    }
+
+    .stats-row .value {
+      font-size: 16px;
+    }
+
+    .touch-controls button {
+      font-size: 22px;
     }
   }
 </style>
@@ -137,25 +207,27 @@
   <div class="layout">
     <canvas id="board" width="300" height="600"></canvas>
     <div class="side">
-      <div class="panel">
-        <h2>スコア</h2>
-        <div class="value" id="score">0</div>
+      <div class="stats-row">
+        <div class="panel">
+          <h2>スコア</h2>
+          <div class="value" id="score">0</div>
+        </div>
+        <div class="panel">
+          <h2>レベル</h2>
+          <div class="value" id="level">1</div>
+        </div>
+        <div class="panel">
+          <h2>消したライン</h2>
+          <div class="value" id="lines">0</div>
+        </div>
       </div>
-      <div class="panel">
-        <h2>レベル</h2>
-        <div class="value" id="level">1</div>
-      </div>
-      <div class="panel">
-        <h2>消したライン</h2>
-        <div class="value" id="lines">0</div>
-      </div>
-      <div class="panel">
+      <div class="panel next-panel">
         <h2>次のブロック</h2>
         <canvas id="next" width="120" height="120"></canvas>
       </div>
-      <div class="panel">
-        <div id="message">Spaceキーでスタート</div>
-        <button id="startBtn">スタート / 再スタート</button>
+      <div class="panel start-panel">
+        <div id="message">スタートボタンでプレイ開始</div>
+        <button id="startBtn" type="button">スタート / 再スタート</button>
       </div>
       <div class="panel keys">
         <div><b>←→</b> 移動</div>
@@ -165,12 +237,12 @@
         <div><b>P</b> 一時停止</div>
       </div>
       <div class="touch-controls">
-        <button id="btnRotate">⟳</button>
-        <button id="btnUp">↑</button>
-        <button id="btnDrop">⬇︎</button>
-        <button id="btnLeft">←</button>
-        <button id="btnDown">↓</button>
-        <button id="btnRight">→</button>
+        <button id="btnRotate" type="button" aria-label="回転">⟳</button>
+        <button id="btnUp" type="button" aria-label="回転">↑</button>
+        <button id="btnDrop" type="button" aria-label="ハードドロップ">⬇︎</button>
+        <button id="btnLeft" type="button" aria-label="左へ移動">←</button>
+        <button id="btnDown" type="button" aria-label="ソフトドロップ">↓</button>
+        <button id="btnRight" type="button" aria-label="右へ移動">→</button>
       </div>
     </div>
   </div>
@@ -508,13 +580,41 @@
     }
   });
 
-  startBtn.addEventListener('click', startGame);
-  document.getElementById('btnLeft').addEventListener('click', () => move(-1));
-  document.getElementById('btnRight').addEventListener('click', () => move(1));
-  document.getElementById('btnDown').addEventListener('click', () => softDrop());
-  document.getElementById('btnUp').addEventListener('click', () => rotate());
-  document.getElementById('btnRotate').addEventListener('click', () => rotate());
-  document.getElementById('btnDrop').addEventListener('click', () => hardDrop());
+  // タップで即実行し、押しっぱなしで一定間隔ごとに繰り返す（スマホの移動・ソフトドロップ用）
+  function bindRepeatable(el, action, repeatDelay = 250, repeatInterval = 90) {
+    let timeoutId = null;
+    let intervalId = null;
+    const stop = () => {
+      if (timeoutId) { clearTimeout(timeoutId); timeoutId = null; }
+      if (intervalId) { clearInterval(intervalId); intervalId = null; }
+    };
+    el.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      action();
+      timeoutId = setTimeout(() => {
+        intervalId = setInterval(action, repeatInterval);
+      }, repeatDelay);
+    });
+    el.addEventListener('pointerup', stop);
+    el.addEventListener('pointerleave', stop);
+    el.addEventListener('pointercancel', stop);
+  }
+
+  // タップで1回だけ実行（回転・ハードドロップ・スタート用）
+  function bindTap(el, action) {
+    el.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      action();
+    });
+  }
+
+  bindTap(startBtn, startGame);
+  bindRepeatable(document.getElementById('btnLeft'), () => move(-1));
+  bindRepeatable(document.getElementById('btnRight'), () => move(1));
+  bindRepeatable(document.getElementById('btnDown'), () => softDrop());
+  bindTap(document.getElementById('btnUp'), () => rotate());
+  bindTap(document.getElementById('btnRotate'), () => rotate());
+  bindTap(document.getElementById('btnDrop'), () => hardDrop());
 
   draw();
   drawNext();
